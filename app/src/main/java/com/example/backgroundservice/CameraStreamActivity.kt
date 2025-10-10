@@ -1,6 +1,10 @@
 package com.example.backgroundservice
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -27,18 +31,17 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
+import androidx.media3.common.Player // Added import
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.PlayerView
+import com.example.backgroundservice.NetworkSignalService.Companion.isStreamActivityRunning
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// Replace with your actual stream URL from VLC
-private const val STREAM_URL = "rtsp://192.168.1.10:8554/stream" // e.g., "rtsp://192.168.1.10:8554/stream"
 private const val MAX_LOG_LINES = 100 // Maximum number of log lines to keep in the on-screen display
 
 class CameraStreamActivity : ComponentActivity() {
@@ -56,10 +59,34 @@ class CameraStreamActivity : ComponentActivity() {
         logMessages.add(formattedMessage)
     }
 
+    private val closeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_CLOSE_CAMERA_STREAM) {
+                logMessage("CameraStreamActivity", "Received close broadcast. Finishing activity.")
+                finish()
+            }
+        }
+    }
+
     @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        NetworkSignalService.isStreamActivityRunning = true
+
+        val streamUrl = intent.getStringExtra("STREAM_URL")
+        if (streamUrl == null) {
+            logMessage("CameraStreamActivity", "STREAM_URL not found in intent. Finishing activity.")
+            finish()
+            return
+        }
+
+        val intentFilter = IntentFilter(ACTION_CLOSE_CAMERA_STREAM)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(closeReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+             registerReceiver(closeReceiver, intentFilter)
+        }
+        isStreamActivityRunning = true
         logMessage("CameraStreamActivity", "Activity created and stream status set to true.")
 
         // Start the background service
@@ -75,7 +102,7 @@ class CameraStreamActivity : ComponentActivity() {
                                 .fillMaxWidth()
                                 .aspectRatio(16 / 9f)
                         ) {
-                            CameraStreamPlayer(STREAM_URL) {
+                            CameraStreamPlayer(streamUrl) {
                                 logMessage("CameraStreamActivity", "Playback ended. Finishing activity.")
                                 finish()
                             }
@@ -94,8 +121,9 @@ class CameraStreamActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterReceiver(closeReceiver)
         logMessage("CameraStreamActivity", "Activity destroyed, updating stream status.")
-        NetworkSignalService.isStreamActivityRunning = false
+        isStreamActivityRunning = false
     }
 }
 
