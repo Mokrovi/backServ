@@ -3,6 +3,7 @@ package com.example.backgroundservice
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -12,12 +13,16 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
+import fi.iki.elonen.NanoHTTPD.MIME_PLAINTEXT
 import fi.iki.elonen.NanoHTTPD.Response
 import fi.iki.elonen.NanoHTTPD.Response.Status
+import fi.iki.elonen.NanoHTTPD.newFixedLengthResponse
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.Collections
+import org.json.JSONObject
+import java.util.HashMap
 
 // Action for the broadcast to close the CameraStreamActivity
 const val ACTION_CLOSE_CAMERA_STREAM = "com.example.backgroundservice.ACTION_CLOSE_CAMERA_STREAM"
@@ -31,8 +36,10 @@ class NetworkSignalService : Service() {
     private val PORT = 8080
     private val NOTIFICATION_ID = 1
     private val CHANNEL_ID = "NetworkSignalServiceChannel"
+    private val STREAM_CHANNEL_ID = "StreamNotificationChannel"
 
     companion object {
+        var isServiceRunning = false
         var isStreamActivityRunning = false
         var isRemoteCameraActivityRunning = false
     }
@@ -40,8 +47,10 @@ class NetworkSignalService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service creating.")
+        isServiceRunning = true
 
         createNotificationChannel()
+        createStreamNotificationChannel()
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
 
@@ -67,6 +76,20 @@ class NetworkSignalService : Service() {
         }
     }
 
+    private fun createStreamNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val streamChannel = NotificationChannel(
+                STREAM_CHANNEL_ID,
+                "Stream Notifications",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for incoming streams"
+            }
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(streamChannel)
+        }
+    }
+
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Network Signal Service")
@@ -87,6 +110,10 @@ class NetworkSignalService : Service() {
                 response.addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 response.addHeader("Access-Control-Max-Age", "86400")
                 return response
+            }
+
+            if ("/stream" == uri && Method.POST == session.method) {
+                return handleStreamRequest(session)
             }
 
             if ("/trigger" == uri) {
@@ -114,6 +141,72 @@ class NetworkSignalService : Service() {
                 addHeader("Access-Control-Allow-Origin", "*")
             }
         }
+    }
+
+    private fun handleStreamRequest(session: IHTTPSession): Response {
+        try {
+            val files = HashMap<String, String>()
+            session.parseBody(files)
+            val jsonBody = files["postData"]
+            if (jsonBody != null) {
+                val json = JSONObject(jsonBody)
+                val localUrl = json.optString("local_url", null)
+                val externalUrl = json.optString("external_url", null)
+
+                if (localUrl != null || externalUrl != null) {
+                    Log.d(TAG, "Received stream URLs. External: $externalUrl, Local: $localUrl")
+                    showStreamNotification(externalUrl, localUrl)
+                    return newFixedLengthResponse(Status.OK, NanoHTTPD.MIME_PLAINTEXT, "OK").apply {
+                        addHeader("Access-Control-Allow-Origin", "*")
+                    }
+                } else {
+                    Log.w(TAG, "Request to /stream without any URL in body: $jsonBody")
+                    return newFixedLengthResponse(Status.BAD_REQUEST, MIME_PLAINTEXT, "No stream URL found in request body.").apply {
+                        addHeader("Access-Control-Allow-Origin", "*")
+                    }
+                }
+            } else {
+                Log.w(TAG, "Request to /stream with empty body.")
+                return newFixedLengthResponse(Status.BAD_REQUEST, MIME_PLAINTEXT, "Empty request body.").apply {
+                    addHeader("Access-Control-Allow-Origin", "*")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling /stream request", e)
+            return newFixedLengthResponse(Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Server error.").apply {
+                addHeader("Access-Control-Allow-Origin", "*")
+            }
+        }
+    }
+
+    private fun showStreamNotification(externalUrl: String?, localUrl: String?) {
+        val intent = Intent(this, CameraStreamActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            putExtra("EXTERNAL_STREAM_URL", externalUrl)
+            putExtra("LOCAL_STREAM_URL", localUrl)
+        }
+
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val fullScreenIntent = Intent(this, CameraStreamActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            putExtra("EXTERNAL_STREAM_URL", externalUrl)
+            putExtra("LOCAL_STREAM_URL", localUrl)
+        }
+        val fullScreenPendingIntent = PendingIntent.getActivity(this, 1, fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val notificationBuilder = NotificationCompat.Builder(this, STREAM_CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Incoming Stream")
+            .setContentText("Tap to open the stream.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setContentIntent(pendingIntent)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setAutoCancel(true)
+
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(2, notificationBuilder.build())
     }
 
     private fun handleTriggerRemoteStream(session: IHTTPSession): Response {
@@ -198,6 +291,7 @@ class NetworkSignalService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroying.")
+        isServiceRunning = false
         webServer?.stop()
         Log.d(TAG, "NanoHTTPD server stopped.")
     }

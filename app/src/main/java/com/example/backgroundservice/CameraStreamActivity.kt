@@ -6,63 +6,42 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
-import androidx.media3.common.Player // Added import
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.PlayerView
 import com.example.backgroundservice.NetworkSignalService.Companion.isStreamActivityRunning
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
-private const val MAX_LOG_LINES = 100 // Maximum number of log lines to keep in the on-screen display
 
 class CameraStreamActivity : ComponentActivity() {
 
-    private val logMessages = mutableStateListOf<String>()
-
-    private fun logMessage(tag: String, message: String) {
-        val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        val formattedMessage = "[$timestamp] $tag: $message"
-        Log.d(tag, message)
-        
-        if (logMessages.size >= MAX_LOG_LINES) {
-            logMessages.removeAt(0)
-        }
-        logMessages.add(formattedMessage)
-    }
+    private var isReceiverRegistered = false
 
     private val closeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_CLOSE_CAMERA_STREAM) {
-                logMessage("CameraStreamActivity", "Received close broadcast. Finishing activity.")
                 finish()
             }
         }
@@ -72,9 +51,13 @@ class CameraStreamActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val streamUrl = intent.getStringExtra("STREAM_URL")
-        if (streamUrl == null) {
-            logMessage("CameraStreamActivity", "STREAM_URL not found in intent. Finishing activity.")
+        val externalStreamUrl = intent.getStringExtra("EXTERNAL_STREAM_URL")
+        val localStreamUrl = intent.getStringExtra("LOCAL_STREAM_URL")
+        val singleStreamUrl = intent.getStringExtra("STREAM_URL")
+
+        val primaryUrl = externalStreamUrl ?: singleStreamUrl
+
+        if (primaryUrl == null && localStreamUrl == null) {
             finish()
             return
         }
@@ -84,35 +67,30 @@ class CameraStreamActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(closeReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
-             registerReceiver(closeReceiver, intentFilter)
+            registerReceiver(closeReceiver, intentFilter)
         }
+        isReceiverRegistered = true
         isStreamActivityRunning = true
-        logMessage("CameraStreamActivity", "Activity created and stream status set to true.")
 
-        // Start the background service
         val serviceIntent = Intent(this, NetworkSignalService::class.java)
         startService(serviceIntent)
 
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+                Surface(modifier = Modifier.fillMaxSize(), color = Color.Gray) {
                     Column(modifier = Modifier.fillMaxSize()) {
+                        Spacer(Modifier.weight(1f))
                         Box(
                             modifier = Modifier
+                                .padding(horizontal = 16.dp)
                                 .fillMaxWidth()
                                 .aspectRatio(16 / 9f)
                         ) {
-                            CameraStreamPlayer(streamUrl) {
-                                logMessage("CameraStreamActivity", "Playback ended. Finishing activity.")
+                            CameraStreamPlayer(primaryUrl, localStreamUrl, onPlaybackEnded = {
                                 finish()
-                            }
+                            })
                         }
-                        LogsDisplay(
-                            logMessages = logMessages,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                        )
+                        Spacer(Modifier.weight(5f))
                     }
                 }
             }
@@ -121,46 +99,57 @@ class CameraStreamActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(closeReceiver)
-        logMessage("CameraStreamActivity", "Activity destroyed, updating stream status.")
+        if (isReceiverRegistered) {
+            unregisterReceiver(closeReceiver)
+        }
         isStreamActivityRunning = false
     }
 }
 
 @UnstableApi
 @Composable
-fun CameraStreamPlayer(streamUrl: String, onPlaybackEnded: () -> Unit) {
+fun CameraStreamPlayer(
+    primaryUrl: String?,
+    fallbackUrl: String?,
+    onPlaybackEnded: () -> Unit
+) {
     val context = LocalContext.current
     val exoPlayer = remember {
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(buildUponParameters().setMaxVideoSizeSd())
         }
-
-        val mediaItem = MediaItem.Builder()
-            .setUri(streamUrl)
-            .setLiveConfiguration(
-                MediaItem.LiveConfiguration.Builder()
-                    .setMaxPlaybackSpeed(1.02f)
-                    .build()
-            )
-            .build()
-
-        val mediaSource = RtspMediaSource.Factory()
-            .setTimeoutMs(10000L) // Timeout for the RTSP session
-            .createMediaSource(mediaItem)
-
         ExoPlayer.Builder(context)
             .setTrackSelector(trackSelector)
             .build()
-            .apply {
-                setMediaSource(mediaSource)
-                prepare()
-                playWhenReady = true
-            }
     }
 
-    DisposableEffect(key1 = exoPlayer, key2 = onPlaybackEnded) {
+    DisposableEffect(key1 = exoPlayer, key2 = primaryUrl, key3 = fallbackUrl) {
         val listener = object : Player.Listener {
+            private var isUsingPrimaryUrl = true
+
+            override fun onPlayerError(error: PlaybackException) {
+                if (isUsingPrimaryUrl && fallbackUrl != null) {
+                    isUsingPrimaryUrl = false
+                    val fallbackMediaItem = MediaItem.Builder()
+                        .setUri(fallbackUrl)
+                        .setLiveConfiguration(
+                            MediaItem.LiveConfiguration.Builder()
+                                .setMaxPlaybackSpeed(1.02f)
+                                .build()
+                        )
+                        .build()
+                    val fallbackMediaSource = RtspMediaSource.Factory()
+                        .setTimeoutMs(10000L)
+                        .createMediaSource(fallbackMediaItem)
+
+                    exoPlayer.setMediaSource(fallbackMediaSource)
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = true
+                } else {
+                    onPlaybackEnded()
+                }
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     onPlaybackEnded()
@@ -168,6 +157,28 @@ fun CameraStreamPlayer(streamUrl: String, onPlaybackEnded: () -> Unit) {
             }
         }
         exoPlayer.addListener(listener)
+
+        val initialUrl = primaryUrl ?: fallbackUrl
+        if (initialUrl != null) {
+            val mediaItem = MediaItem.Builder()
+                .setUri(initialUrl)
+                .setLiveConfiguration(
+                    MediaItem.LiveConfiguration.Builder()
+                        .setMaxPlaybackSpeed(1.02f)
+                        .build()
+                )
+                .build()
+
+            val mediaSource = RtspMediaSource.Factory()
+                .setTimeoutMs(10000L)
+                .createMediaSource(mediaItem)
+
+            exoPlayer.setMediaSource(mediaSource)
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = true
+        } else {
+            onPlaybackEnded() // No URLs provided
+        }
 
         onDispose {
             exoPlayer.removeListener(listener)
@@ -180,47 +191,10 @@ fun CameraStreamPlayer(streamUrl: String, onPlaybackEnded: () -> Unit) {
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     player = exoPlayer
+                    useController = false
                 }
             },
             modifier = Modifier.fillMaxSize()
         )
-    }
-}
-
-@Composable
-fun LogsDisplay(logMessages: List<String>, modifier: Modifier = Modifier) {
-    LazyColumn(modifier = modifier.padding(8.dp)) {
-        items(logMessages) { message ->
-            Text(text = message, style = MaterialTheme.typography.bodySmall)
-            Divider()
-        }
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun DefaultPreview() {
-    MaterialTheme {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16 / 9f)
-            ) {
-                Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxSize()){
-                    Text("Camera Stream Area", modifier = Modifier.padding(16.dp))
-                }
-            }
-            LogsDisplay(
-                logMessages = listOf(
-                    "[10:00:00] App: Initializing...",
-                    "[10:00:01] Network: Connecting to stream...",
-                    "[10:00:02] CameraStreamActivity: Player ready."
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            )
-        }
     }
 }
