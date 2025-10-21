@@ -6,8 +6,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -15,12 +17,15 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -51,6 +56,17 @@ class CameraStreamActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+
         val externalStreamUrl = intent.getStringExtra("EXTERNAL_STREAM_URL")
         val localStreamUrl = intent.getStringExtra("LOCAL_STREAM_URL")
         val singleStreamUrl = intent.getStringExtra("STREAM_URL")
@@ -77,20 +93,25 @@ class CameraStreamActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color.Gray) {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        Spacer(Modifier.weight(1f))
+                Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Spacer(Modifier.weight(3f))
                         Box(
                             modifier = Modifier
-                                .padding(horizontal = 16.dp)
                                 .fillMaxWidth()
+                                .padding(horizontal = 32.dp)
                                 .aspectRatio(16 / 9f)
+                                .clip(RoundedCornerShape(16.dp))
                         ) {
                             CameraStreamPlayer(primaryUrl, localStreamUrl, onPlaybackEnded = {
                                 finish()
                             })
                         }
-                        Spacer(Modifier.weight(5f))
+                        Spacer(Modifier.weight(2f))
                     }
                 }
             }

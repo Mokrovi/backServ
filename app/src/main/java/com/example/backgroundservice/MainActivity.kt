@@ -1,10 +1,13 @@
 package com.example.backgroundservice
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -60,10 +63,21 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(startService: () -> Unit) {
     val context = LocalContext.current
+
     var hasNotificationPermission by remember {
         mutableStateOf(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+        )
+    }
+
+    var hasSystemAlertWindowPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
             } else {
                 true
             }
@@ -84,8 +98,18 @@ fun MainScreen(startService: () -> Unit) {
         }
     )
 
-    LaunchedEffect(hasNotificationPermission) {
-        if (hasNotificationPermission) {
+    val systemAlertWindowPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        hasSystemAlertWindowPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Settings.canDrawOverlays(context)
+        } else {
+            true
+        }
+    }
+
+    LaunchedEffect(hasNotificationPermission, hasSystemAlertWindowPermission) {
+        if (hasNotificationPermission && hasSystemAlertWindowPermission) {
             startService()
         }
     }
@@ -98,30 +122,55 @@ fun MainScreen(startService: () -> Unit) {
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (!hasNotificationPermission) {
-                Text(
-                    text = "The app needs permission to show notifications for incoming streams. This is required for the app to open automatically.",
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                Button(onClick = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            when {
+                !hasNotificationPermission -> {
+                    Text(
+                        text = "The app needs permission to show notifications for incoming streams. This is required for the app to open automatically.",
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 16.dp),
+                        color = Color.White
+                    )
+                    Button(onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }) {
+                        Text("Grant Notification Permission")
                     }
-                }) {
-                    Text("Grant Notification Permission")
                 }
-            } else {
-                val serviceStatusText = if (isServiceRunning) {
-                    "The background service is running. The app will open automatically when a stream is received."
-                } else {
-                    "Permission granted. Starting background service..."
+
+                !hasSystemAlertWindowPermission -> {
+                    Text(
+                        text = "The app needs permission to display over other apps to open automatically.",
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 16.dp),
+                        color = Color.White
+                    )
+                    Button(onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                            systemAlertWindowPermissionLauncher.launch(intent)
+                        }
+                    }) {
+                        Text("Grant Overlay Permission")
+                    }
                 }
-                Text(
-                    text = serviceStatusText,
-                    textAlign = TextAlign.Center,
-                    color = Color.White
-                )
+
+                else -> {
+                    val serviceStatusText = if (isServiceRunning) {
+                        "The background service is running. The app will open automatically when a stream is received."
+                    } else {
+                        "All permissions granted. Starting background service..."
+                    }
+                    Text(
+                        text = serviceStatusText,
+                        textAlign = TextAlign.Center,
+                        color = Color.White
+                    )
+                }
             }
         }
     }

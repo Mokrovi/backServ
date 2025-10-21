@@ -181,7 +181,7 @@ class NetworkSignalService : Service() {
 
     private fun showStreamNotification(externalUrl: String?, localUrl: String?) {
         val intent = Intent(this, CameraStreamActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
             putExtra("EXTERNAL_STREAM_URL", externalUrl)
             putExtra("LOCAL_STREAM_URL", localUrl)
         }
@@ -189,7 +189,7 @@ class NetworkSignalService : Service() {
         val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
         val fullScreenIntent = Intent(this, CameraStreamActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
             putExtra("EXTERNAL_STREAM_URL", externalUrl)
             putExtra("LOCAL_STREAM_URL", localUrl)
         }
