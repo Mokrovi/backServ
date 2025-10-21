@@ -143,6 +143,33 @@ class NetworkSignalService : Service() {
         }
     }
 
+    private fun openStreamActivity(externalUrl: String?, localUrl: String?) {
+        // Если активность уже запущена, сначала закрываем её
+        if (isStreamActivityRunning) {
+            val closeIntent = Intent(ACTION_CLOSE_CAMERA_STREAM)
+            sendBroadcast(closeIntent)
+            // Даём время на закрытие перед открытием новой активности
+            Thread.sleep(500)
+        }
+
+        val intent = Intent(this, CameraStreamActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("EXTERNAL_STREAM_URL", externalUrl)
+            putExtra("LOCAL_STREAM_URL", localUrl)
+        }
+
+        try {
+            startActivity(intent)
+            Log.d(TAG, "CameraStreamActivity started automatically")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start CameraStreamActivity automatically", e)
+            // Fallback: показываем уведомление если не удалось открыть активность
+            showFallbackNotification(externalUrl, localUrl)
+        }
+    }
+
     private fun handleStreamRequest(session: IHTTPSession): Response {
         try {
             val files = HashMap<String, String>()
@@ -155,7 +182,10 @@ class NetworkSignalService : Service() {
 
                 if (localUrl != null || externalUrl != null) {
                     Log.d(TAG, "Received stream URLs. External: $externalUrl, Local: $localUrl")
-                    showStreamNotification(externalUrl, localUrl)
+
+                    // НЕПОСРЕДСТВЕННО открываем активность вместо показа уведомления
+                    openStreamActivity(externalUrl, localUrl)
+
                     return newFixedLengthResponse(Status.OK, NanoHTTPD.MIME_PLAINTEXT, "OK").apply {
                         addHeader("Access-Control-Allow-Origin", "*")
                     }
@@ -179,21 +209,15 @@ class NetworkSignalService : Service() {
         }
     }
 
-    private fun showStreamNotification(externalUrl: String?, localUrl: String?) {
+    private fun showFallbackNotification(externalUrl: String?, localUrl: String?) {
         val intent = Intent(this, CameraStreamActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
             putExtra("EXTERNAL_STREAM_URL", externalUrl)
             putExtra("LOCAL_STREAM_URL", localUrl)
         }
 
-        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
-        val fullScreenIntent = Intent(this, CameraStreamActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            putExtra("EXTERNAL_STREAM_URL", externalUrl)
-            putExtra("LOCAL_STREAM_URL", localUrl)
-        }
-        val fullScreenPendingIntent = PendingIntent.getActivity(this, 1, fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
         val notificationBuilder = NotificationCompat.Builder(this, STREAM_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -202,7 +226,6 @@ class NetworkSignalService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setContentIntent(pendingIntent)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
             .setAutoCancel(true)
 
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
