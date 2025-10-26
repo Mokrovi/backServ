@@ -5,7 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Bundle
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -50,14 +54,26 @@ import androidx.media3.ui.PlayerView
 import com.example.backgroundservice.NetworkSignalService.Companion.isStreamActivityRunning
 import kotlinx.coroutines.delay
 
+const val ACTION_UPDATE_STREAM_URL = "com.example.backgroundservice.ACTION_UPDATE_STREAM_URL"
+
 class CameraStreamActivity : ComponentActivity() {
     private val TAG = "CameraStreamActivity"
     private var isReceiverRegistered = false
+    private var isStreamEnded = false
 
     private val closeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ACTION_CLOSE_CAMERA_STREAM) {
-                finish()
+            when (intent?.action) {
+                ACTION_CLOSE_CAMERA_STREAM -> {
+                    Log.d(TAG, "Received close broadcast")
+                    finish()
+                }
+                ACTION_UPDATE_STREAM_URL -> {
+                    Log.d(TAG, "Received update stream URL broadcast")
+                    val externalUrl = intent.getStringExtra("EXTERNAL_STREAM_URL")
+                    val localUrl = intent.getStringExtra("LOCAL_STREAM_URL")
+                    // Здесь можно обновить URL потока если нужно
+                }
             }
         }
     }
@@ -85,8 +101,12 @@ class CameraStreamActivity : ComponentActivity() {
                     WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
         )
 
-        // Регистрируем broadcast receiver для закрытия активности
-        val intentFilter = IntentFilter(ACTION_CLOSE_CAMERA_STREAM)
+        // Регистрируем broadcast receiver
+        val intentFilter = IntentFilter().apply {
+            addAction(ACTION_CLOSE_CAMERA_STREAM)
+            addAction(ACTION_UPDATE_STREAM_URL)
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(closeReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -95,11 +115,10 @@ class CameraStreamActivity : ComponentActivity() {
         isReceiverRegistered = true
         isStreamActivityRunning = true
 
-        // Запускаем сервис чтобы убедиться что он работает
+        // Запускаем сервис
         val serviceIntent = Intent(this, NetworkSignalService::class.java)
         startService(serviceIntent)
 
-        // Обрабатываем intent для получения URL потоков
         handleIntent(intent)
     }
 
@@ -107,7 +126,7 @@ class CameraStreamActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         Log.d(TAG, "onNewIntent called with new stream data")
-        setIntent(intent) // Устанавливаем новый intent как текущий
+        setIntent(intent)
         handleIntent(intent)
     }
 
@@ -143,10 +162,23 @@ class CameraStreamActivity : ComponentActivity() {
                                 .aspectRatio(16 / 9f)
                                 .clip(RoundedCornerShape(16.dp))
                         ) {
-                            CameraStreamPlayer(primaryUrl, localStreamUrl, onPlaybackEnded = {
-                                Log.d(TAG, "Playback ended, finishing activity")
-                                finish()
-                            })
+                            CameraStreamPlayer(
+                                primaryUrl,
+                                localStreamUrl,
+                                onPlaybackEnded = {
+                                    Log.d(TAG, "Playback ended, finishing activity")
+                                    isStreamEnded = true
+                                    finish()
+                                },
+                                onPlaybackError = {
+                                    Log.d(TAG, "Playback error, finishing activity")
+                                    isStreamEnded = true
+                                    // Даем время увидеть ошибку перед закрытием
+                                    Handler(Looper.getMainLooper()).postDelayed({
+                                        finish()
+                                    }, 3000)
+                                }
+                            )
                         }
                         Spacer(Modifier.weight(2f))
                     }
@@ -162,6 +194,8 @@ class CameraStreamActivity : ComponentActivity() {
         }
         isStreamActivityRunning = false
     }
+
+
 }
 
 @UnstableApi
@@ -169,7 +203,8 @@ class CameraStreamActivity : ComponentActivity() {
 fun CameraStreamPlayer(
     primaryUrl: String?,
     fallbackUrl: String?,
-    onPlaybackEnded: () -> Unit
+    onPlaybackEnded: () -> Unit,
+    onPlaybackError: () -> Unit
 ) {
     val context = LocalContext.current
     val exoPlayer = remember {
@@ -191,7 +226,7 @@ fun CameraStreamPlayer(
     // Обработка переключения на резервный поток
     LaunchedEffect(shouldSwitchToFallback) {
         if (shouldSwitchToFallback && fallbackUrl != null) {
-            delay(1000) // Небольшая задержка перед переключением
+            delay(1000)
             val fallbackMediaItem = MediaItem.Builder()
                 .setUri(fallbackUrl)
                 .setLiveConfiguration(
@@ -214,14 +249,16 @@ fun CameraStreamPlayer(
     // Обработка закрытия активности
     LaunchedEffect(shouldCloseActivity) {
         if (shouldCloseActivity) {
-            delay(3000) // Показываем ошибку 3 секунды перед закрытием
-            onPlaybackEnded()
+            delay(3000)
+            onPlaybackError()
         }
     }
 
     DisposableEffect(key1 = exoPlayer, key2 = primaryUrl, key3 = fallbackUrl) {
         val listener = object : Player.Listener {
             private var isUsingPrimaryUrl = primaryUrl != null
+            private var errorCount = 0
+            private val maxErrorCount = 3
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
@@ -252,6 +289,7 @@ fun CameraStreamPlayer(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                errorCount++
                 val errorMessage = when (error.errorCode) {
                     PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "Ошибка сети: невозможно подключиться"
                     PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Таймаут подключения"
@@ -262,16 +300,21 @@ fun CameraStreamPlayer(
                     else -> "Ошибка: ${error.errorCode} - ${error.message}"
                 }
 
+                if (errorCount >= maxErrorCount) {
+                    connectionState = "❌ Критическая ошибка: превышено количество попыток подключения"
+                    hasError = true
+                    isConnecting = false
+                    shouldCloseActivity = true
+                    return
+                }
+
                 if (isUsingPrimaryUrl && fallbackUrl != null) {
                     connectionState = "❌ Ошибка основного потока: $errorMessage\nПопытка подключения к резервному потоку..."
                     isUsingPrimaryUrl = false
                     currentUrl = fallbackUrl
                     shouldSwitchToFallback = true
-                } else {
-                    connectionState = "❌ Критическая ошибка: $errorMessage\nПриложение будет закрыто"
-                    hasError = true
-                    isConnecting = false
-                    shouldCloseActivity = true
+                } else if (fallbackUrl != null) {
+                    shouldSwitchToFallback = true
                 }
             }
 
@@ -303,7 +346,7 @@ fun CameraStreamPlayer(
                 .build()
 
             val mediaSource = RtspMediaSource.Factory()
-                .setTimeoutMs(10000L)
+                .setTimeoutMs(15000L)
                 .createMediaSource(mediaItem)
 
             exoPlayer.setMediaSource(mediaSource)

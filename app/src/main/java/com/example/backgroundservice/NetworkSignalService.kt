@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
@@ -37,6 +38,7 @@ class NetworkSignalService : Service() {
     private val NOTIFICATION_ID = 1
     private val CHANNEL_ID = "NetworkSignalServiceChannel"
     private val STREAM_CHANNEL_ID = "StreamNotificationChannel"
+    private val ACTION_UPDATE_STREAM_URL = "com.example.backgroundservice.ACTION_UPDATE_STREAM_URL"
 
     companion object {
         var isServiceRunning = false
@@ -144,20 +146,25 @@ class NetworkSignalService : Service() {
     }
 
     private fun openStreamActivity(externalUrl: String?, localUrl: String?) {
-        // Если активность уже запущена, сначала закрываем её
+        // Если активность уже запущена, обновляем URL вместо создания новой
         if (isStreamActivityRunning) {
-            val closeIntent = Intent(ACTION_CLOSE_CAMERA_STREAM)
-            sendBroadcast(closeIntent)
-            // Даём время на закрытие перед открытием новой активности
-            Thread.sleep(500)
+            val updateIntent = Intent(ACTION_UPDATE_STREAM_URL).apply {
+                putExtra("EXTERNAL_STREAM_URL", externalUrl)
+                putExtra("LOCAL_STREAM_URL", localUrl)
+            }
+            sendBroadcast(updateIntent)
+            return
         }
+
+        val sharedPreferences = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        val isDebugMode = sharedPreferences.getBoolean("debug_mode", false)
 
         val intent = Intent(this, CameraStreamActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("EXTERNAL_STREAM_URL", externalUrl)
             putExtra("LOCAL_STREAM_URL", localUrl)
+            putExtra("DEBUG_MODE", isDebugMode)
         }
 
         try {
@@ -165,7 +172,6 @@ class NetworkSignalService : Service() {
             Log.d(TAG, "CameraStreamActivity started automatically")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start CameraStreamActivity automatically", e)
-            // Fallback: показываем уведомление если не удалось открыть активность
             showFallbackNotification(externalUrl, localUrl)
         }
     }
