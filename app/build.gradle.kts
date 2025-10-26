@@ -33,6 +33,7 @@ android {
     }
     kotlinOptions {
         jvmTarget = "11"
+        freeCompilerArgs += listOf("-Xopt-in=androidx.media3.common.util.UnstableApi")
     }
     buildFeatures {
         compose = true

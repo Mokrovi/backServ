@@ -7,19 +7,20 @@ import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.compose.foundation.layout.*
 import android.os.Looper
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -111,7 +112,6 @@ class CameraStreamActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
-
     @UnstableApi
     private fun handleIntent(intent: Intent?) {
         val externalStreamUrl = intent?.getStringExtra("EXTERNAL_STREAM_URL")
@@ -119,7 +119,6 @@ class CameraStreamActivity : ComponentActivity() {
         val singleStreamUrl = intent?.getStringExtra("STREAM_URL")
         val isDebugMode = intent?.getBooleanExtra("DEBUG_MODE", false) ?: false
 
-        // Автоматически запускаем первое видео при старте активности
         if (currentVideoName == null) {
             val videoFiles = getAvailableVideoFiles(this)
             if (videoFiles.isNotEmpty()) {
@@ -141,50 +140,23 @@ class CameraStreamActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
-                                .aspectRatio(16 / 9f)
-                                .clip(RoundedCornerShape(16.dp))
-                        ) {
-                            CameraStreamPlayer(
-                                primaryUrl,
-                                localStreamUrl,
-                                isDebugMode = isDebugMode,
-                                onPlaybackEnded = {
-                                    Log.d(TAG, "Playback ended, finishing activity")
-                                    isStreamEnded = true
-                                    finishAndRemoveTask()
-                                },
-                                onPlaybackError = {
-                                    Log.d(TAG, "Playback error, finishing activity")
-                                    isStreamEnded = true
-                                    Handler(Looper.getMainLooper()).postDelayed({
-                                        finishAndRemoveTask()
-                                    }, 3000)
-                                }
-                            )
+                    StreamLayout(
+                        primaryUrl = primaryUrl,
+                        fallbackUrl = localStreamUrl,
+                        isDebugMode = isDebugMode,
+                        onPlaybackEnded = {
+                            Log.d(TAG, "Playback ended, finishing activity")
+                            isStreamEnded = true
+                            finishAndRemoveTask()
+                        },
+                        onPlaybackError = {
+                            Log.d(TAG, "Playback error, finishing activity")
+                            isStreamEnded = true
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                finishAndRemoveTask()
+                            }, 3000)
                         }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
-                                .aspectRatio(16 / 9f)
-                                .clip(RoundedCornerShape(16.dp))
-                        ) {
-                            AnimationPlayer(
-                                isDebugMode = isDebugMode
-                            )
-                        }
-                    }
+                    )
                 }
             }
         }
@@ -213,6 +185,65 @@ class CameraStreamActivity : ComponentActivity() {
                     Log.d(TAG, "Received close broadcast")
                     finishAndRemoveTask()
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun StreamLayout(
+    primaryUrl: String?,
+    fallbackUrl: String?,
+    isDebugMode: Boolean,
+    onPlaybackEnded: () -> Unit,
+    onPlaybackError: () -> Unit
+) {
+    var currentVideoName by remember { mutableStateOf(CameraStreamActivity.currentVideoName) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(100)
+            if (CameraStreamActivity.currentVideoName != currentVideoName) {
+                currentVideoName = CameraStreamActivity.currentVideoName
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // Основной стрим - занимает большую часть экрана
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(if (currentVideoName != null) 0.5f else 0.8f)
+                .clip(RoundedCornerShape(16.dp))
+        ) {
+            CameraStreamPlayer(
+                primaryUrl = primaryUrl,
+                fallbackUrl = fallbackUrl,
+                isDebugMode = isDebugMode,
+                onPlaybackEnded = onPlaybackEnded,
+                onPlaybackError = onPlaybackError
+            )
+        }
+
+        // Показываем анимацию только если есть текущее видео
+        if (currentVideoName != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Анимация - занимает оставшуюся часть экрана
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(0.45f)
+                    .clip(RoundedCornerShape(16.dp))
+            ) {
+                AnimationPlayer(
+                    isDebugMode = isDebugMode
+                )
             }
         }
     }
@@ -257,7 +288,7 @@ fun AnimationPlayer(
                     Log.d("AnimationPlayer", "File found: ${videoFile.absolutePath}")
                     val mediaItem = MediaItem.fromUri(Uri.fromFile(videoFile))
                     exoPlayer.setMediaItem(mediaItem)
-                    exoPlayer.repeatMode = Player.REPEAT_MODE_ALL // Включить повтор
+                    exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
                     exoPlayer.prepare()
                     exoPlayer.playWhenReady = true
                     exoPlayer.volume = currentVolume
@@ -297,9 +328,10 @@ fun AnimationPlayer(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         player = exoPlayer
-                        useController = false // Скрыть контролы управления
+                        useController = false
                         setShowNextButton(false)
                         setShowPreviousButton(false)
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
                     }
                 },
                 modifier = Modifier.fillMaxSize()
@@ -325,13 +357,7 @@ fun AnimationPlayer(
                             color = Color.White
                         )
                         Text(
-                            text = "Загрузка: $currentVideoName",
-                            color = Color.White,
-                            textAlign = TextAlign.Center
-                        )
-                    } else {
-                        Text(
-                            text = "Анимация будет отображаться здесь\n\nВыберите видео в веб-интерфейсе",
+                            text = "Загрузка: ${currentVideoName?.take(20)}...",
                             color = Color.White,
                             textAlign = TextAlign.Center
                         )
@@ -354,103 +380,6 @@ fun AnimationPlayer(
                 )
             }
         }
-    }
-}
-
-private fun findVideoFile(context: Context, fileName: String): java.io.File? {
-    val directories = arrayOf(
-        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
-        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM),
-        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
-        android.os.Environment.getExternalStorageDirectory()
-    )
-
-    for (directory in directories) {
-        if (directory.exists() && directory.isDirectory) {
-            val file = java.io.File(directory, fileName)
-            if (file.exists()) {
-                return file
-            }
-            val files = directory.listFiles()
-            if (files != null) {
-                for (f in files) {
-                    if (f.isDirectory) {
-                        val subFile = java.io.File(f, fileName)
-                        if (subFile.exists()) {
-                            return subFile
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return null
-}
-
-private fun getAvailableVideoFiles(context: Context): List<String> {
-    val videoFiles = mutableListOf<String>()
-
-    try {
-        val directories = arrayOf(
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM),
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
-            android.os.Environment.getExternalStorageDirectory()
-        )
-
-        val videoExtensions = arrayOf("mp4", "avi", "mkv", "mov", "wmv", "flv", "3gp", "webm", "m4v")
-
-        for (directory in directories) {
-            if (directory.exists() && directory.isDirectory) {
-                scanDirectoryForVideos(directory, videoFiles, videoExtensions, 0)
-            }
-        }
-
-        // Сортируем файлы по имени для удобства
-        videoFiles.sort()
-
-        Log.d("VideoSearch", "Found ${videoFiles.size} video files: ${videoFiles.joinToString(", ")}")
-
-    } catch (e: Exception) {
-        Log.e("VideoSearch", "Error getting video files", e)
-    }
-
-    return videoFiles
-}
-
-private fun scanDirectoryForVideos(
-    directory: java.io.File,
-    videoFiles: MutableList<String>,
-    extensions: Array<String>,
-    depth: Int
-) {
-    try {
-        // Ограничиваем глубину рекурсии для избежания бесконечных циклов
-        if (depth > 5) return
-
-        val files = directory.listFiles() ?: return
-
-        for (file in files) {
-            if (file.isDirectory) {
-                // Игнорируем некоторые системные папки
-                if (!file.name.startsWith(".") &&
-                    !file.name.equals("Android", true) &&
-                    !file.name.equals("lost+found", true)) {
-                    scanDirectoryForVideos(file, videoFiles, extensions, depth + 1)
-                }
-            } else if (file.isFile) {
-                val fileName = file.name.toLowerCase()
-                val extension = fileName.substringAfterLast('.', "")
-                if (extensions.contains(extension)) {
-                    videoFiles.add(file.name)
-                    Log.d("VideoSearch", "Found video: ${file.absolutePath}")
-                }
-            }
-        }
-    } catch (e: Exception) {
-        Log.e("VideoSearch", "Error scanning directory ${directory.absolutePath}", e)
     }
 }
 
@@ -627,6 +556,7 @@ fun CameraStreamPlayer(
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = false
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -637,7 +567,7 @@ fun CameraStreamPlayer(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(16.dp),
-                contentAlignment = if (isDebugMode) Alignment.TopStart else Alignment.TopCenter
+                contentAlignment = if (isDebugMode) Alignment.TopStart else Alignment.Center
             ) {
                 Column(
                     horizontalAlignment = if (isDebugMode) Alignment.Start else Alignment.CenterHorizontally,
@@ -645,28 +575,30 @@ fun CameraStreamPlayer(
                 ) {
                     if (isConnecting && !isDebugMode) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
+                            modifier = Modifier.size(36.dp),
                             color = Color.White
                         )
                     }
 
-                    if (!isDebugMode && (isConnecting || hasError)) {
+                    if (isConnecting || hasError) {
                         Text(
                             text = connectionState,
                             color = Color.White,
                             style = MaterialTheme.typography.bodyMedium,
-                            textAlign = TextAlign.Center,
+                            textAlign = if (isDebugMode) TextAlign.Start else TextAlign.Center,
                             modifier = Modifier.padding(horizontal = 16.dp)
                         )
 
-                        currentUrl?.let { url ->
-                            Text(
-                                text = "URL: ${url.take(60)}${if (url.length > 60) "..." else ""}",
-                                color = Color.LightGray,
-                                style = MaterialTheme.typography.bodySmall,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
+                        if (!isDebugMode) {
+                            currentUrl?.let { url ->
+                                Text(
+                                    text = "URL: ${url.take(50)}${if (url.length > 50) "..." else ""}",
+                                    color = Color.LightGray,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -674,3 +606,101 @@ fun CameraStreamPlayer(
         }
     }
 }
+
+private fun findVideoFile(context: Context, fileName: String): java.io.File? {
+    val directories = arrayOf(
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM),
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
+        android.os.Environment.getExternalStorageDirectory()
+    )
+
+    for (directory in directories) {
+        if (directory.exists() && directory.isDirectory) {
+            val file = java.io.File(directory, fileName)
+            if (file.exists()) {
+                return file
+            }
+            val files = directory.listFiles()
+            if (files != null) {
+                for (f in files) {
+                    if (f.isDirectory) {
+                        val subFile = java.io.File(f, fileName)
+                        if (subFile.exists()) {
+                            return subFile
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return null
+}
+
+private fun getAvailableVideoFiles(context: Context): List<String> {
+    val videoFiles = mutableListOf<String>()
+
+    try {
+        val directories = arrayOf(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM),
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
+            android.os.Environment.getExternalStorageDirectory()
+        )
+
+        val videoExtensions = arrayOf("mp4", "avi", "mkv", "mov", "wmv", "flv", "3gp", "webm", "m4v")
+
+        for (directory in directories) {
+            if (directory.exists() && directory.isDirectory) {
+                scanDirectoryForVideos(directory, videoFiles, videoExtensions, 0)
+            }
+        }
+
+        // Сортируем файлы по имени для удобства
+        videoFiles.sort()
+
+        Log.d("VideoSearch", "Found ${videoFiles.size} video files: ${videoFiles.joinToString(", ")}")
+
+    } catch (e: Exception) {
+        Log.e("VideoSearch", "Error getting video files", e)
+    }
+
+    return videoFiles
+}
+
+private fun scanDirectoryForVideos(
+    directory: java.io.File,
+    videoFiles: MutableList<String>,
+    extensions: Array<String>,
+    depth: Int
+) {
+    try {
+        // Ограничиваем глубину рекурсии для избежания бесконечных циклов
+        if (depth > 5) return
+
+        val files = directory.listFiles() ?: return
+
+        for (file in files) {
+            if (file.isDirectory) {
+                // Игнорируем некоторые системные папки
+                if (!file.name.startsWith(".") &&
+                    !file.name.equals("Android", true) &&
+                    !file.name.equals("lost+found", true)) {
+                    scanDirectoryForVideos(file, videoFiles, extensions, depth + 1)
+                }
+            } else if (file.isFile) {
+                val fileName = file.name.toLowerCase()
+                val extension = fileName.substringAfterLast('.', "")
+                if (extensions.contains(extension)) {
+                    videoFiles.add(file.name)
+                    Log.d("VideoSearch", "Found video: ${file.absolutePath}")
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("VideoSearch", "Error scanning directory ${directory.absolutePath}", e)
+    }
+}
+
