@@ -4,12 +4,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Bundle
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -54,35 +53,20 @@ import androidx.media3.ui.PlayerView
 import com.example.backgroundservice.NetworkSignalService.Companion.isStreamActivityRunning
 import kotlinx.coroutines.delay
 
-const val ACTION_UPDATE_STREAM_URL = "com.example.backgroundservice.ACTION_UPDATE_STREAM_URL"
-
 class CameraStreamActivity : ComponentActivity() {
     private val TAG = "CameraStreamActivity"
     private var isReceiverRegistered = false
     private var isStreamEnded = false
 
-    private val closeReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                ACTION_CLOSE_CAMERA_STREAM -> {
-                    Log.d(TAG, "Received close broadcast")
-                    finish()
-                }
-                ACTION_UPDATE_STREAM_URL -> {
-                    Log.d(TAG, "Received update stream URL broadcast")
-                    val externalUrl = intent.getStringExtra("EXTERNAL_STREAM_URL")
-                    val localUrl = intent.getStringExtra("LOCAL_STREAM_URL")
-                    // Здесь можно обновить URL потока если нужно
-                }
-            }
-        }
+    companion object {
+        var currentVideoName: String? = null
+        var currentVolume: Float = 1.0f
     }
 
     @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Устанавливаем флаги для отображения поверх блокировки экрана
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -94,28 +78,25 @@ class CameraStreamActivity : ComponentActivity() {
             )
         }
 
-        // Добавляем флаги для окна
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                     WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
-                    WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
+                    WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
         )
 
-        // Регистрируем broadcast receiver
         val intentFilter = IntentFilter().apply {
             addAction(ACTION_CLOSE_CAMERA_STREAM)
-            addAction(ACTION_UPDATE_STREAM_URL)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(closeReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(broadcastReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(closeReceiver, intentFilter)
+            registerReceiver(broadcastReceiver, intentFilter)
         }
         isReceiverRegistered = true
         isStreamActivityRunning = true
 
-        // Запускаем сервис
         val serviceIntent = Intent(this, NetworkSignalService::class.java)
         startService(serviceIntent)
 
@@ -130,21 +111,32 @@ class CameraStreamActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
+
     @UnstableApi
     private fun handleIntent(intent: Intent?) {
         val externalStreamUrl = intent?.getStringExtra("EXTERNAL_STREAM_URL")
         val localStreamUrl = intent?.getStringExtra("LOCAL_STREAM_URL")
         val singleStreamUrl = intent?.getStringExtra("STREAM_URL")
+        val isDebugMode = intent?.getBooleanExtra("DEBUG_MODE", false) ?: false
+
+        // Автоматически запускаем первое видео при старте активности
+        if (currentVideoName == null) {
+            val videoFiles = getAvailableVideoFiles(this)
+            if (videoFiles.isNotEmpty()) {
+                currentVideoName = videoFiles.first()
+                Log.d(TAG, "Auto-starting video: $currentVideoName")
+            }
+        }
 
         val primaryUrl = externalStreamUrl ?: singleStreamUrl
 
         if (primaryUrl == null && localStreamUrl == null) {
             Log.w(TAG, "No stream URLs provided, finishing activity")
-            finish()
+            finishAndRemoveTask()
             return
         }
 
-        Log.d(TAG, "Starting stream with primary URL: $primaryUrl, fallback URL: $localStreamUrl")
+        Log.d(TAG, "Starting stream with primary URL: $primaryUrl, fallback URL: $localStreamUrl, Debug mode: $isDebugMode")
 
         setContent {
             MaterialTheme {
@@ -154,33 +146,44 @@ class CameraStreamActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Spacer(Modifier.weight(3f))
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 32.dp)
+                                .weight(1f)
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
                                 .aspectRatio(16 / 9f)
                                 .clip(RoundedCornerShape(16.dp))
                         ) {
                             CameraStreamPlayer(
                                 primaryUrl,
                                 localStreamUrl,
+                                isDebugMode = isDebugMode,
                                 onPlaybackEnded = {
                                     Log.d(TAG, "Playback ended, finishing activity")
                                     isStreamEnded = true
-                                    finish()
+                                    finishAndRemoveTask()
                                 },
                                 onPlaybackError = {
                                     Log.d(TAG, "Playback error, finishing activity")
                                     isStreamEnded = true
-                                    // Даем время увидеть ошибку перед закрытием
                                     Handler(Looper.getMainLooper()).postDelayed({
-                                        finish()
+                                        finishAndRemoveTask()
                                     }, 3000)
                                 }
                             )
                         }
-                        Spacer(Modifier.weight(2f))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .aspectRatio(16 / 9f)
+                                .clip(RoundedCornerShape(16.dp))
+                        ) {
+                            AnimationPlayer(
+                                isDebugMode = isDebugMode
+                            )
+                        }
                     }
                 }
             }
@@ -190,12 +193,265 @@ class CameraStreamActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (isReceiverRegistered) {
-            unregisterReceiver(closeReceiver)
+            unregisterReceiver(broadcastReceiver)
         }
         isStreamActivityRunning = false
+
+        if (isStreamEnded) {
+            Log.d(TAG, "Stream ended, returning to previous app")
+            val homeIntent = Intent(Intent.ACTION_MAIN)
+            homeIntent.addCategory(Intent.CATEGORY_HOME)
+            homeIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            startActivity(homeIntent)
+        }
     }
 
+    private val broadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_CLOSE_CAMERA_STREAM -> {
+                    Log.d(TAG, "Received close broadcast")
+                    finishAndRemoveTask()
+                }
+            }
+        }
+    }
+}
 
+@UnstableApi
+@Composable
+fun AnimationPlayer(
+    isDebugMode: Boolean
+) {
+    val context = LocalContext.current
+    val exoPlayer = remember { ExoPlayer.Builder(context).build() }
+
+    var currentVideoName by remember { mutableStateOf(CameraStreamActivity.currentVideoName) }
+    var currentVolume by remember { mutableStateOf(CameraStreamActivity.currentVolume) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var currentPlayingVideo by remember { mutableStateOf<String?>(null) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(100)
+            if (CameraStreamActivity.currentVideoName != currentVideoName) {
+                currentVideoName = CameraStreamActivity.currentVideoName
+            }
+            if (CameraStreamActivity.currentVolume != currentVolume) {
+                currentVolume = CameraStreamActivity.currentVolume
+            }
+        }
+    }
+
+    LaunchedEffect(currentVideoName) {
+        if (currentVideoName != null && currentVideoName != currentPlayingVideo) {
+            try {
+                errorMessage = null
+                currentPlayingVideo = currentVideoName
+
+                Log.d("AnimationPlayer", "Trying to play: $currentVideoName")
+
+                val videoFile = findVideoFile(context, currentVideoName!!)
+                if (videoFile != null && videoFile.exists()) {
+                    Log.d("AnimationPlayer", "File found: ${videoFile.absolutePath}")
+                    val mediaItem = MediaItem.fromUri(Uri.fromFile(videoFile))
+                    exoPlayer.setMediaItem(mediaItem)
+                    exoPlayer.repeatMode = Player.REPEAT_MODE_ALL // Включить повтор
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.volume = currentVolume
+                    isPlaying = true
+                    Log.d("AnimationPlayer", "Started playing: $currentVideoName with repeat mode")
+                } else {
+                    errorMessage = "Файл не найден: $currentVideoName"
+                    Log.e("AnimationPlayer", "File not found: $currentVideoName")
+                }
+            } catch (e: Exception) {
+                errorMessage = "Ошибка воспроизведения: ${e.message}"
+                Log.e("AnimationPlayer", "Error playing video", e)
+            }
+        } else if (currentVideoName == null && currentPlayingVideo != null) {
+            exoPlayer.stop()
+            isPlaying = false
+            currentPlayingVideo = null
+            errorMessage = null
+            Log.d("AnimationPlayer", "Playback stopped")
+        }
+    }
+
+    LaunchedEffect(currentVolume) {
+        exoPlayer.volume = currentVolume
+        Log.d("AnimationPlayer", "Volume set to: $currentVolume")
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            exoPlayer.release()
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (currentVideoName != null && isPlaying) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = false // Скрыть контролы управления
+                        setShowNextButton(false)
+                        setShowPreviousButton(false)
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    if (errorMessage != null) {
+                        Text(
+                            text = errorMessage!!,
+                            color = Color.Red,
+                            textAlign = TextAlign.Center
+                        )
+                    } else if (currentVideoName != null) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(36.dp),
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Загрузка: $currentVideoName",
+                            color = Color.White,
+                            textAlign = TextAlign.Center
+                        )
+                    } else {
+                        Text(
+                            text = "Анимация будет отображаться здесь\n\nВыберите видео в веб-интерфейсе",
+                            color = Color.White,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+
+        if (isDebugMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(8.dp),
+                contentAlignment = Alignment.TopStart
+            ) {
+                Text(
+                    text = "Анимация: ${currentVideoName ?: "нет"}\nГромкость: ${(currentVolume * 100).toInt()}%\nСтатус: ${if (isPlaying) "playing" else "stopped"}",
+                    color = Color.Yellow,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+private fun findVideoFile(context: Context, fileName: String): java.io.File? {
+    val directories = arrayOf(
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM),
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
+        android.os.Environment.getExternalStorageDirectory()
+    )
+
+    for (directory in directories) {
+        if (directory.exists() && directory.isDirectory) {
+            val file = java.io.File(directory, fileName)
+            if (file.exists()) {
+                return file
+            }
+            val files = directory.listFiles()
+            if (files != null) {
+                for (f in files) {
+                    if (f.isDirectory) {
+                        val subFile = java.io.File(f, fileName)
+                        if (subFile.exists()) {
+                            return subFile
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return null
+}
+
+private fun getAvailableVideoFiles(context: Context): List<String> {
+    val videoFiles = mutableListOf<String>()
+
+    try {
+        val directories = arrayOf(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM),
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
+            android.os.Environment.getExternalStorageDirectory()
+        )
+
+        val videoExtensions = arrayOf("mp4", "avi", "mkv", "mov", "wmv", "flv", "3gp", "webm", "m4v")
+
+        for (directory in directories) {
+            if (directory.exists() && directory.isDirectory) {
+                scanDirectoryForVideos(directory, videoFiles, videoExtensions, 0)
+            }
+        }
+
+        // Сортируем файлы по имени для удобства
+        videoFiles.sort()
+
+        Log.d("VideoSearch", "Found ${videoFiles.size} video files: ${videoFiles.joinToString(", ")}")
+
+    } catch (e: Exception) {
+        Log.e("VideoSearch", "Error getting video files", e)
+    }
+
+    return videoFiles
+}
+
+private fun scanDirectoryForVideos(
+    directory: java.io.File,
+    videoFiles: MutableList<String>,
+    extensions: Array<String>,
+    depth: Int
+) {
+    try {
+        // Ограничиваем глубину рекурсии для избежания бесконечных циклов
+        if (depth > 5) return
+
+        val files = directory.listFiles() ?: return
+
+        for (file in files) {
+            if (file.isDirectory) {
+                // Игнорируем некоторые системные папки
+                if (!file.name.startsWith(".") &&
+                    !file.name.equals("Android", true) &&
+                    !file.name.equals("lost+found", true)) {
+                    scanDirectoryForVideos(file, videoFiles, extensions, depth + 1)
+                }
+            } else if (file.isFile) {
+                val fileName = file.name.toLowerCase()
+                val extension = fileName.substringAfterLast('.', "")
+                if (extensions.contains(extension)) {
+                    videoFiles.add(file.name)
+                    Log.d("VideoSearch", "Found video: ${file.absolutePath}")
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("VideoSearch", "Error scanning directory ${directory.absolutePath}", e)
+    }
 }
 
 @UnstableApi
@@ -203,6 +459,7 @@ class CameraStreamActivity : ComponentActivity() {
 fun CameraStreamPlayer(
     primaryUrl: String?,
     fallbackUrl: String?,
+    isDebugMode: Boolean,
     onPlaybackEnded: () -> Unit,
     onPlaybackError: () -> Unit
 ) {
@@ -223,7 +480,6 @@ fun CameraStreamPlayer(
     var shouldSwitchToFallback by remember { mutableStateOf(false) }
     var shouldCloseActivity by remember { mutableStateOf(false) }
 
-    // Обработка переключения на резервный поток
     LaunchedEffect(shouldSwitchToFallback) {
         if (shouldSwitchToFallback && fallbackUrl != null) {
             delay(1000)
@@ -246,7 +502,6 @@ fun CameraStreamPlayer(
         }
     }
 
-    // Обработка закрытия активности
     LaunchedEffect(shouldCloseActivity) {
         if (shouldCloseActivity) {
             delay(3000)
@@ -270,6 +525,7 @@ fun CameraStreamPlayer(
                         connectionState = "Буферизация видео..."
                         isConnecting = true
                         hasError = false
+                        errorCount = 0
                     }
                     Player.STATE_READY -> {
                         connectionState = if (isUsingPrimaryUrl) {
@@ -279,6 +535,7 @@ fun CameraStreamPlayer(
                         }
                         isConnecting = false
                         hasError = false
+                        errorCount = 0
                     }
                     Player.STATE_ENDED -> {
                         connectionState = "Воспроизведение завершено"
@@ -375,41 +632,42 @@ fun CameraStreamPlayer(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Overlay с информацией о подключении
-        if (isConnecting || hasError) {
+        if (isConnecting || hasError || isDebugMode) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(16.dp),
-                contentAlignment = Alignment.TopCenter
+                contentAlignment = if (isDebugMode) Alignment.TopStart else Alignment.TopCenter
             ) {
                 Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                    horizontalAlignment = if (isDebugMode) Alignment.Start else Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (isConnecting) {
+                    if (isConnecting && !isDebugMode) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(24.dp),
                             color = Color.White
                         )
                     }
 
-                    Text(
-                        text = connectionState,
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 16.dp)
-                    )
-
-                    currentUrl?.let { url ->
+                    if (!isDebugMode && (isConnecting || hasError)) {
                         Text(
-                            text = "URL: ${url.take(60)}${if (url.length > 60) "..." else ""}",
-                            color = Color.LightGray,
-                            style = MaterialTheme.typography.bodySmall,
+                            text = connectionState,
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(horizontal = 16.dp)
                         )
+
+                        currentUrl?.let { url ->
+                            Text(
+                                text = "URL: ${url.take(60)}${if (url.length > 60) "..." else ""}",
+                                color = Color.LightGray,
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                        }
                     }
                 }
             }
